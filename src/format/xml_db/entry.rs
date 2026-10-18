@@ -228,7 +228,9 @@ impl Entry {
             auto_type: db.autotype.as_ref().map(|at| at.clone().into()),
             history,
             custom_data,
-            quality_check: Some(db.quality_check),
+            // `QualityCheck` is a KDBX 4.1 element that defaults to true; like KeePass and
+            // KeePassXC, only write it when it is disabled.
+            quality_check: (!db.quality_check).then_some(false),
             previous_parent_group: db.previous_parent_group.map(|g| UUID(g.uuid())),
         })
     }

@@ -4,6 +4,20 @@ use crate::{config::DatabaseVersion, db::Database, DatabaseKey};
 
 impl Database {
     /// Saves the database to the given destination, using the provided key for encryption.
+    ///
+    /// Only KDBX 4 databases can be saved. The minor version written follows `config.version`:
+    ///
+    /// * A KDBX 4.1 database is written as KDBX 4.1.
+    /// * A KDBX 4.0 database is written as KDBX 4.0, unless it holds data that only KDBX 4.1 can
+    ///   represent: group tags, an entry with `quality_check` disabled, a previous parent group on
+    ///   an entry or group, a custom icon with a name or modification time, or a custom data item
+    ///   with a modification time. Such a database is written as KDBX 4.1 instead, so that this
+    ///   data is not dropped. This follows KeePassXC. Note that moving an entry or group
+    ///   records its previous parent group, and creating a custom icon records its modification
+    ///   time, so either one is enough to have a KDBX 4.0 database written as KDBX 4.1.
+    ///
+    /// `config.version` itself is not changed. Other minor versions return
+    /// [`DatabaseSaveError::UnsupportedVersion`].
     pub fn save(
         &self,
         destination: &mut dyn std::io::Write,

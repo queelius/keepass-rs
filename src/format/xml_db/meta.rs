@@ -458,7 +458,7 @@ pub struct Icon {
     #[serde(rename = "UUID")]
     pub uuid: UUID,
 
-    #[serde(default, with = "cs_opt_string")]
+    #[serde(default, with = "cs_opt_string", skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,10 +1,10 @@
-use std::io::Write;
+use std::{collections::HashMap, io::Write};
 
 use byteorder::{LittleEndian, WriteBytesExt};
 
 use crate::{
     crypt,
-    db::{Database, DatabaseSaveError, Value},
+    db::{CustomDataItem, Database, DatabaseSaveError, Entry, Value},
     format::{
         hmac_block_stream,
         io::WriteLengthTaggedExt,
@@ -28,9 +28,7 @@ pub fn dump_kdbx4(
     db_key: &DatabaseKey,
     writer: &mut dyn Write,
 ) -> Result<(), DatabaseSaveError> {
-    if !matches!(db.config.version, DatabaseVersion::KDB4(1)) {
-        return Err(DatabaseSaveError::UnsupportedVersion);
-    }
+    let version = version_to_write(db)?;
 
     // generate encryption keys and seeds on the fly when saving
     let mut master_seed = vec![0; HEADER_MASTER_SEED_SIZE];
@@ -50,7 +48,7 @@ pub fn dump_kdbx4(
     // dump the outer header - need to buffer so that SHA256 can be computed
     let mut header_data = Vec::new();
 
-    db.config.version.dump(&mut header_data)?;
+    version.dump(&mut header_data)?;
 
     KDBX4OuterHeader {
         outer_cipher_config: db.config.outer_cipher_config.clone(),
@@ -121,6 +119,61 @@ pub fn dump_kdbx4(
     writer.write_all(&payload_hmac)?;
 
     Ok(())
+}
+
+/// Choose the KDBX 4 minor version to write for `db`.
+///
+/// A KDBX 4.1 database is always written as 4.1. A KDBX 4.0 database stays 4.0 unless it holds
+/// data that only 4.1 can represent, in which case it is written as 4.1 so that nothing is lost.
+/// This follows KeePassXC's `KeePass2Writer::kdbxVersionRequired`.
+fn version_to_write(db: &Database) -> Result<DatabaseVersion, DatabaseSaveError> {
+    match db.config.version {
+        DatabaseVersion::KDB4(0) if !uses_kdbx41_features(db) => Ok(DatabaseVersion::KDB4(0)),
+        DatabaseVersion::KDB4(0) | DatabaseVersion::KDB4(1) => Ok(DatabaseVersion::KDB4(1)),
+        _ => Err(DatabaseSaveError::UnsupportedVersion),
+    }
+}
+
+/// Whether `db` holds any data that was introduced in KDBX 4.1
+/// (see <https://keepass.info/help/kb/kdbx_4.1.html>).
+///
+/// This checks everything KeePassXC checks, plus custom data modification times (which KeePass
+/// checks) and historical entries, so that saving as 4.0 never drops data. The specification only
+/// gives `Meta` custom data items a `LastModificationTime`, but this crate also keeps one on group
+/// and entry custom data items, so those count as 4.1 data too.
+///
+/// The XML writer omits each of these elements when it holds its default value, so a database
+/// for which this returns `false` serializes without any 4.1-only elements.
+fn uses_kdbx41_features(db: &Database) -> bool {
+    fn has_modification_times(custom_data: &HashMap<String, CustomDataItem>) -> bool {
+        custom_data
+            .values()
+            .any(|item| item.last_modification_time.is_some())
+    }
+
+    fn entry_uses_kdbx41_features(entry: &Entry) -> bool {
+        !entry.quality_check
+            || entry.previous_parent_group.is_some()
+            || has_modification_times(&entry.custom_data)
+    }
+
+    has_modification_times(&db.meta.custom_data)
+        || db
+            .custom_icons
+            .values()
+            .any(|icon| icon.name.is_some() || icon.last_modification_time.is_some())
+        || db.groups.values().any(|group| {
+            !group.tags.is_empty()
+                || group.previous_parent_group.is_some()
+                || has_modification_times(&group.custom_data)
+        })
+        || db.entries.values().any(|entry| {
+            entry_uses_kdbx41_features(entry)
+                || entry
+                    .history
+                    .as_ref()
+                    .is_some_and(|history| history.entries.iter().any(entry_uses_kdbx41_features))
+        })
 }
 
 impl KDBX4OuterHeader {
